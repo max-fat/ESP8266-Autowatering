@@ -27,19 +27,25 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 ESP8266WebServer server(80);
 
-const int PIN_W = 0;  // 13 для ESP8266, 2 для ESP01 и 0 для ESPреле
+int PIN_W = 0;  // 13 для ESP8266, 2 для ESP01 и 0 для ESPреле
 bool display_en = true;
 
 Time time_clock(0, 0, 0);
+
+struct {
 byte d_watering;
 byte h_watering;
 byte m_watering;
 word w_watering;
 byte d_clock;
+byte pin_watering;
+bool enable_watering;
+} timer_watering[4];
+
 GTimer timerClock(MS, 60000);
 GTimer timerPoliv(MS);
 
-bool watering;
+byte lock_watering=0;
 bool ap_connect;
 
 
@@ -69,52 +75,83 @@ void handleRoot() {
 }
 
 void save_time() {
-  d_watering = server.arg("days").toInt();
-  h_watering = server.arg("hours").toInt(); 
-  m_watering = server.arg("minutes").toInt();
-  w_watering = server.arg("seconds").toInt();
+  byte id = server.arg("id").toInt();
+
+  timer_watering[id].enable_watering = server.arg("enable").toInt();
+  timer_watering[id].d_watering = server.arg("days").toInt();
+  timer_watering[id].h_watering = server.arg("hours").toInt(); 
+  timer_watering[id].m_watering = server.arg("minutes").toInt();
+  timer_watering[id].w_watering = server.arg("seconds").toInt();
+  timer_watering[id].pin_watering = server.arg("pin").toInt();
   
-  Serial.print("save settings - days: ");
-  Serial.print(d_watering);
+  Serial.print("save settings[");
+  Serial.print(id);
+  Serial.print("]");
+  Serial.print(timer_watering[id].enable_watering);
+  Serial.print(" - days: ");
+  Serial.print(timer_watering[id].d_watering);
   Serial.print(", hours: ");
-  Serial.print(h_watering);
+  Serial.print(timer_watering[id].h_watering);
   Serial.print(", minutes: ");
-  Serial.print(m_watering);
+  Serial.print(timer_watering[id].m_watering);
   Serial.print(", s: ");
-  Serial.println(w_watering);
-  
-  EEPROM.write(0, d_watering);  // Запись данных
-  EEPROM.write(1, h_watering);  // Запись данных
-  EEPROM.write(2, m_watering);  // Запись данных
-  EEPROM.put(3,w_watering);
+  Serial.print(timer_watering[id].w_watering);
+  Serial.print(", pin: ");
+  Serial.println(timer_watering[id].pin_watering);
+
+  EEPROM.put(0, timer_watering);
   EEPROM.commit();   // Сохранение изменений
   server.send(200, "text/html", "OK");
 }
 
 void get_time() {
-  String message = String(d_watering)+",";
-  if (h_watering<10) {message=message+"0";};
-  message=message+String(h_watering)+":";
-  if (m_watering<10) {message=message+"0";};
-  message=message+String(m_watering)+","+String(w_watering);
+  String message ="";
+  for (byte i=0; i<4; i++) {
+    message+=String(timer_watering[i].d_watering)+",";
+    if (timer_watering[i].h_watering<10) {message+="0";};
+    message+=String(timer_watering[i].h_watering)+":";
+    if (timer_watering[i].m_watering<10) {message+="0";};
+    message+=String(timer_watering[i].m_watering)+","+String(timer_watering[i].w_watering)+","+String(timer_watering[i].enable_watering)+","+String(timer_watering[i].pin_watering)+";";
+  };
   Serial.println("Message: "+message);
   server.send(200, "text/plane", message);
 }
 
 void put_water() {
-  if (!watering) {
-    watering=true;
+  if (lock_watering==0) {
+    lock_watering=1;
+    byte id = server.arg("id").toInt();
+    PIN_W = server.arg("pin").toInt();
     digitalWrite(PIN_W, HIGH);
     Serial.println("полив начат");
-    timerPoliv.setTimeout(w_watering*1000);
+    timerPoliv.setTimeout(timer_watering[id].w_watering*1000);
+  }
+}
+void start_water() {
+  if (lock_watering==0) {
+    lock_watering=1;
+    PIN_W = server.arg("pin").toInt();
+    Serial.print("Ручной полив без таймера начат, пин=");
+    Serial.println(PIN_W);
+    digitalWrite(PIN_W, HIGH);
+  }
+}
+void stop_water() {
+  if (lock_watering==1) {
+    digitalWrite(PIN_W, LOW);
+    Serial.print("Полив окончен, пин=");
+    Serial.println(PIN_W);
+    lock_watering=0;
   }
 }
 
 void setup(void) {
+  for (byte i=0; i<4; i++) {
+    pinMode(timer_watering[i].pin_watering, OUTPUT);
+    digitalWrite(timer_watering[i].pin_watering, LOW);
+  }
+  
   Serial.begin(115200);
-
-  pinMode(PIN_W, OUTPUT);
-  digitalWrite(PIN_W, LOW);
   
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     Serial.println(F("SSD1306 allocation failed"));
@@ -144,13 +181,13 @@ void setup(void) {
   ap_connect=false;
     if(!res) {
         Serial.println("Failed to connect");
-    } 
+    }
     else {
         //если удалось подключиться к точке доступа
         ap_connect=true;
         //Serial.println(WiFiManager->getConfigPortalSSID());
         
-        display.clearDisplay();  
+        display.clearDisplay();
         display.setTextSize(1);
         display.setTextColor(SSD1306_WHITE);
         display.setCursor(0,0);
@@ -160,11 +197,13 @@ void setup(void) {
         display.print("ip: ");
         display.println(WiFi.localIP());
         display.display(); // actually display all of the above
-        delay(200); 
+        delay(200);
         
         timeClient.begin();
         server.begin();
         timeClient.update();
+        Serial.print("Time: ");
+        Serial.println(timeClient.getFormattedTime());
         display.print("Time: ");
         display.println(timeClient.getFormattedTime());
         time_clock=timeClient.getHours() *60 + timeClient.getMinutes();
@@ -175,38 +214,72 @@ void setup(void) {
         server.on("/read", get_time);
         server.on("/save_time", save_time);
         server.on("/put_water", put_water);
+        server.on("/start", start_water);
+        server.on("/stop", stop_water);
         server.begin();
       
-        EEPROM.begin(5);  // Инициализация EEPROM с размером 512 байт
-        d_watering = EEPROM.read(0);
-        h_watering = EEPROM.read(1); 
-        m_watering = EEPROM.read(2);
-        EEPROM.get(3,w_watering);  
-        Serial.print("days: ");
-        Serial.print(d_watering);
-        Serial.print(", hours: ");
-        Serial.print(h_watering);
-        Serial.print(", minutes: ");
-        Serial.print(m_watering);
-        Serial.print(", s: ");
-        Serial.println(w_watering);
+        EEPROM.begin(sizeof(timer_watering));  // Инициализация EEPROM с размером 
+        EEPROM.get(0,timer_watering);
+        Serial.print("Size: ");
+        Serial.println(sizeof(timer_watering));
+
+        for(byte id=0; id<4; id++) // цикл для переменной i от 1 до k с шагом 1
+        {
+          timer_watering[id].d_clock=0;
+          Serial.print("save settings[");
+          Serial.print(id);
+          Serial.print("]");
+          Serial.print(timer_watering[id].enable_watering);
+          Serial.print(" - days: ");
+          Serial.print(timer_watering[id].d_watering);
+          Serial.print(", hours: ");
+          Serial.print(timer_watering[id].h_watering);
+          Serial.print(", minutes: ");
+          Serial.print(timer_watering[id].m_watering);
+          Serial.print(", s: ");
+          Serial.print(timer_watering[id].w_watering);
+          Serial.print(", pin: ");
+          Serial.println(timer_watering[id].pin_watering);
+        }
+
     }
 }
 
 void loop(void) {
   if (ap_connect) {
-    if (timerPoliv.isReady()) {digitalWrite(PIN_W, LOW); Serial.println("полив завершен");}; // 
-    if (timerClock.isReady()) {time_clock+=1; Serial.println(time_clock.TotalMinutes());};   // тикаем каждую минуту
-     
-    if (time_clock.TotalMinutes() == (h_watering*60+m_watering)) {
-      if (!watering & (d_clock==d_watering)) {
-        watering=true;
-        digitalWrite(PIN_W, HIGH);
-        Serial.println("полив начат");
-        timerPoliv.setTimeout(w_watering*1000);
-      }
-    }
-    else watering=false;
+    if (timerPoliv.isReady()) {digitalWrite(PIN_W, LOW); Serial.println("полив завершен");lock_watering=0;}; // 
+    if (timerClock.isReady()) {
+        time_clock+=1; //к часам добавляем минуту
+        
+        Serial.println(time_clock.TotalMinutes());
+        
+        for (byte i=0; i<4; i++) {
+          if (time_clock.TotalMinutes() == (timer_watering[i].h_watering*60+timer_watering[i].m_watering)){
+            timer_watering[i].d_clock+=1; //к таймеру совпавшему добавляем сутки
+            Serial.print("Совпало время таймера #");
+            Serial.print(i);
+            Serial.print(" день ");
+            Serial.println(timer_watering[i].d_clock);
+            
+            if (timer_watering[i].enable_watering){
+              Serial.println("таймер для полива включен");
+              if (lock_watering==0 and timer_watering[i].w_watering>0 and timer_watering[i].d_clock==timer_watering[i].d_watering)
+              {
+                  lock_watering=1;
+                  PIN_W=timer_watering[i].pin_watering;
+                  timer_watering[i].d_clock=0;
+                  pinMode(PIN_W, OUTPUT);
+                  digitalWrite(PIN_W, HIGH);
+                  Serial.print("полив начат, таймер: ");
+                  Serial.print(i);
+                  Serial.print(", пин: ");
+                  Serial.println(PIN_W);
+                  timerPoliv.setTimeout(timer_watering[i].w_watering*1000);
+            }}
+          } 
+        }
+        
+    };   // тикаем каждую минуту
   };
   
   server.handleClient();
