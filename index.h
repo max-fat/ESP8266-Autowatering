@@ -34,7 +34,7 @@ const char webpage[] PROGMEM = R"=====(
 <body style="background-color: #f9e79f ">
   <center>
     <div>
-      <h1>СЕРВЕР АВТОПОЛИВА v1.2</h1>
+      <h1>СЕРВЕР АВТОПОЛИВА v1.3</h1>
     </div>
     <h2>
             <div class="container">
@@ -118,13 +118,37 @@ const char webpage[] PROGMEM = R"=====(
                <button class="stop_water" onclick="stop()">Стоп</button>
                <br>
                <span class="test_state" id="state"></span>
+         <br>
+         <a href="log.txt">Лог файл</a><br>
+         <a href="remove_file">Удалить лог файл</a><br>
+         <a href="system_status">Системное состояние</a><br>
+         <br>
+     Инверсия выхода <button class="enable" style="background-color: #FF0000;" id="enable" value=0 onclick="enable_invert()">Выключен</button><br>
             </details>
          </h2>
 
          
     <script>
       started = false;
+    
+      function enable_invert() {
+    var xhttp = new XMLHttpRequest();
 
+
+        if (event.target.value == 0) {
+          event.target.value = 1;
+          event.target.style = "background-color: #4CAF50;"
+          event.target.textContent = "Включен";
+          xhttp.open("GET", "enable_invert?invert=1", true);
+        } else {
+          event.target.value = 0;
+          event.target.style = "background-color: #FF0000;"
+          event.target.textContent = "Выключен";
+      xhttp.open("GET", "enable_invert?invert=0", true);
+        };
+    xhttp.send();
+      }
+    
       function enable_state() {
         if (event.target.value == 0) {
           event.target.value = 1;

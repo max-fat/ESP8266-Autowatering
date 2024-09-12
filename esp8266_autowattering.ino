@@ -1,7 +1,9 @@
-#include <WiFiManager.h>
+ #include <WiFiManager.h>
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+  
+#include <FS.h>
 
 #include <EEPROM.h>
 #include "water_ntpc.h"
@@ -48,6 +50,7 @@ GTimer timerPoliv(MS);
 byte lock_watering=0;
 bool ap_connect;
 
+bool NC = false;
 
 
 void configModeCallback (WiFiManager *myWiFiManager) {
@@ -70,8 +73,46 @@ void configModeCallback (WiFiManager *myWiFiManager) {
 }
 
 void handleRoot() {
-  String s = webpage;
-  server.send(200, "text/html", s);
+  server.send(200, "text/html", webpage);
+}
+
+void log_file() {
+  File f=SPIFFS.open("/file.txt","r");
+  server.send(200, "text/plain",f.readStringUntil('EOF'));
+  f.close();
+}
+
+void remove_file() {
+SPIFFS.remove("/file.txt");
+server.send(200, "text/plain", "File delete done");
+}
+
+
+void enable_invert() {
+  byte id = server.arg("invert").toInt();
+  if (id == 0) {NC=false;Serial.println("save NC - false");}
+    else {NC=true;Serial.println("save NC - true");};
+  EEPROM.put(0, NC);
+  EEPROM.commit();   // Сохранение изменений
+}
+
+void system_status() {
+  String message = "Settings:\n";
+  for (byte i=0; i<4; i++) {
+    message += "Timer #"+String(i);
+    message += " - d_watering="+String(timer_watering[i].d_watering);
+    message += ", time="+String(timer_watering[i].h_watering)+":"+String(timer_watering[i].m_watering);
+    message += ", w_watering(sec)="+String(timer_watering[i].w_watering);
+    message += ", d_clock(days)="+String(timer_watering[i].d_clock);
+    message += ", pin_watering="+String(timer_watering[i].pin_watering);
+    message += ", enable_watering=";
+    if (timer_watering[i].enable_watering==1){message += "true\n";} else {message += "false\n";};
+  }
+  message += "time_clock: days=" + String(time_clock.GetDays());
+  message += ", time=" + String(time_clock.GetHours()) + ":" + String(time_clock.GetMinutes());
+  message += "\ntimeClient=" +  getFormattedDateTime(timeClient.getEpochTime());
+
+  server.send(200, "text/plain", message);
 }
 
 void save_time() {
@@ -99,7 +140,7 @@ void save_time() {
   Serial.print(", pin: ");
   Serial.println(timer_watering[id].pin_watering);
 
-  EEPROM.put(0, timer_watering);
+  EEPROM.put(1, timer_watering);
   EEPROM.commit();   // Сохранение изменений
   server.send(200, "text/html", "OK");
 }
@@ -122,36 +163,60 @@ void put_water() {
     lock_watering=1;
     byte id = server.arg("id").toInt();
     PIN_W = server.arg("pin").toInt();
-    digitalWrite(PIN_W, HIGH);
+    digitalWrite(PIN_W, !NC);
+    File file=SPIFFS.open("/file.txt","a");
+    file.print(getFormattedDateTime(timeClient.getEpochTime()));
+    file.println(" - Start watering");
+    file.close();
     Serial.println("полив начат");
     timerPoliv.setTimeout(timer_watering[id].w_watering*1000);
   }
 }
+
 void start_water() {
   if (lock_watering==0) {
     lock_watering=1;
     PIN_W = server.arg("pin").toInt();
     Serial.print("Ручной полив без таймера начат, пин=");
     Serial.println(PIN_W);
-    digitalWrite(PIN_W, HIGH);
+    File file=SPIFFS.open("/file.txt","a");
+    file.print(getFormattedDateTime(timeClient.getEpochTime()));
+    file.print(" - Start handmode watering without timer, pin=");
+    file.println(PIN_W);
+    file.close();
+    digitalWrite(PIN_W, !NC);
   }
 }
+
 void stop_water() {
   if (lock_watering==1) {
-    digitalWrite(PIN_W, LOW);
+    digitalWrite(PIN_W, NC);
     Serial.print("Полив окончен, пин=");
     Serial.println(PIN_W);
+    File file=SPIFFS.open("/file.txt","a");
+    file.print(getFormattedDateTime(timeClient.getEpochTime()));
+    file.print(" - Stop watering, pin=");
+    file.println(PIN_W);
+    file.close();
     lock_watering=0;
   }
 }
 
 void setup(void) {
+  
+  EEPROM.begin(sizeof(timer_watering)+1);  // Инициализация EEPROM с размером 
+  EEPROM.get(0,NC);
+  EEPROM.get(1,timer_watering);
+  
+  
   for (byte i=0; i<4; i++) {
     pinMode(timer_watering[i].pin_watering, OUTPUT);
-    digitalWrite(timer_watering[i].pin_watering, LOW);
+    digitalWrite(timer_watering[i].pin_watering, NC);
   }
   
   Serial.begin(115200);
+  
+
   
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     Serial.println(F("SSD1306 allocation failed"));
@@ -202,26 +267,45 @@ void setup(void) {
         timeClient.begin();
         server.begin();
         timeClient.update();
+        
         Serial.print("Time: ");
-        Serial.println(timeClient.getFormattedTime());
+        Serial.println(getFormattedDateTime(timeClient.getEpochTime()));
         display.print("Time: ");
         display.println(timeClient.getFormattedTime());
         time_clock=timeClient.getHours() *60 + timeClient.getMinutes();
         display.display();
-        delay(200); 
-
+        delay(200);
+         
+        bool success = SPIFFS.begin();
+        Serial.println("");
+        if (success) {
+            Serial.println("File system mounted with success");
+        } else {
+            Serial.println("Error mounting the file system");
+            return;
+        }
+        File file = SPIFFS.open("/file.txt", "a");
+        if (!file) {
+          Serial.println("Error opening file for writing");
+          return;
+        }
+        
+        file.print("\nStart server");
+        file.print(" - Time server: ");
+        file.println(getFormattedDateTime(timeClient.getEpochTime()));
+        file.close();
+  
         server.on("/", handleRoot);
         server.on("/read", get_time);
         server.on("/save_time", save_time);
         server.on("/put_water", put_water);
         server.on("/start", start_water);
         server.on("/stop", stop_water);
+        server.on("/enable_invert", enable_invert);
+        server.on("/log.txt", log_file);
+        server.on("/remove_file", remove_file);
+        server.on("/system_status", system_status);
         server.begin();
-      
-        EEPROM.begin(sizeof(timer_watering));  // Инициализация EEPROM с размером 
-        EEPROM.get(0,timer_watering);
-        Serial.print("Size: ");
-        Serial.println(sizeof(timer_watering));
 
         for(byte id=0; id<4; id++) // цикл для переменной i от 1 до k с шагом 1
         {
@@ -240,36 +324,70 @@ void setup(void) {
           Serial.print(timer_watering[id].w_watering);
           Serial.print(", pin: ");
           Serial.println(timer_watering[id].pin_watering);
+          
         }
-
+        if (NC) Serial.println("Inverse - TRUE"); else Serial.println("Inverse - FALSE");
     }
 }
 
 void loop(void) {
   if (ap_connect) {
-    if (timerPoliv.isReady()) {digitalWrite(PIN_W, LOW); Serial.println("полив завершен");lock_watering=0;}; // 
+    
+    if (timerPoliv.isReady()) {
+        digitalWrite(PIN_W, NC);
+        Serial.println("полив завершен");
+        lock_watering=0;
+        File file=SPIFFS.open("/file.txt","a");
+        file.print(getFormattedDateTime(timeClient.getEpochTime()));
+        file.println(" - Stop watering");
+        file.close();
+        }; //
+         
     if (timerClock.isReady()) {
         time_clock+=1; //к часам добавляем минуту
         
-        Serial.println(time_clock.TotalMinutes());
+        Serial.println(time_clock.TotalMinutes()); // вывод минут дня debug
         
         for (byte i=0; i<4; i++) {
-          if (time_clock.TotalMinutes() == (timer_watering[i].h_watering*60+timer_watering[i].m_watering)){
+          if ((time_clock.GetHours() == timer_watering[i].h_watering) and (time_clock.GetMinutes() == timer_watering[i].m_watering)){
             timer_watering[i].d_clock+=1; //к таймеру совпавшему добавляем сутки
             Serial.print("Совпало время таймера #");
             Serial.print(i);
             Serial.print(" день ");
             Serial.println(timer_watering[i].d_clock);
             
-            if (timer_watering[i].enable_watering){
+            File file=SPIFFS.open("/file.txt","a");
+            //file.print(getFormattedDateTime(timeClient.getEpochTime()));
+            //file.println(" - Совпало время таймера #" + String(i) + " день " + String(timer_watering[i].d_clock));
+            //file.close();
+            
+            if (timer_watering[i].enable_watering==1){
               Serial.println("таймер для полива включен");
-              if (lock_watering==0 and timer_watering[i].w_watering>0 and timer_watering[i].d_clock==timer_watering[i].d_watering)
+              Serial.print("d_clock=");
+              Serial.println(timer_watering[i].d_clock);
+              Serial.print(", d_watering=");
+              Serial.println(timer_watering[i].d_watering);
+
+              File file=SPIFFS.open("/file.txt","a");
+              //file.print(getFormattedDateTime(timeClient.getEpochTime()));
+              //file.println(" - таймер для полива включен d_clock=" + String(timer_watering[i].d_clock) + ", d_watering=" + String(timer_watering[i].d_watering));
+              //file.close();
+              
+              if (lock_watering==0 and timer_watering[i].w_watering>0 and timer_watering[i].d_clock>=timer_watering[i].d_watering)
               {
                   lock_watering=1;
                   PIN_W=timer_watering[i].pin_watering;
                   timer_watering[i].d_clock=0;
                   pinMode(PIN_W, OUTPUT);
-                  digitalWrite(PIN_W, HIGH);
+                  digitalWrite(PIN_W, !NC);
+                  File file=SPIFFS.open("/file.txt","a");
+                  file.print(getFormattedDateTime(timeClient.getEpochTime()));
+                  file.print(" - start watering, number timer: ");
+                  file.print(i);
+                  file.print(", pin: ");
+                  file.println(PIN_W);
+                  file.close();
+                  
                   Serial.print("полив начат, таймер: ");
                   Serial.print(i);
                   Serial.print(", пин: ");
